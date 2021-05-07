@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Afilliate Boxy Serverless Stack
+
+Parameters:
+  ApplicationName:
+    Type: String
+    Default: 'AffiliateBoxy'
+  ApplicationTable:
+    Type: String
+    Default: !Sub
+      - '${name}Table'
+      - { name: !Ref ApplicationName }
+  
+Globals:
+  Function:
+    Runtime: nodejs12.x
+    Timeout: 10
+    Environment:
+        Variables:
+          TABLE_NAME: !Ref ApplicationTable
+
+Resources:
+  ApplicationTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref ApplicationTable
+      AttributeDefinitions:
+        - AttributeName: 'PK'
+          AttributeType: 'S'
+        - AttributeName: 'SK'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'PK'
+          KeyType: 'HASH'
+        - AttributeName: 'SK'
+          KeyType: 'RANGE'
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      GlobalSecondaryIndexes:
+        - IndexName: InvertedIndex
+          KeySchema:
+            - AttributeName: 'SK'
+              KeyType: HASH
+            - AttributeName: 'PK'
+              KeyType: 'RANGE'
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+
+  SNSRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal: 
+              Service: 
+                - 'cognito-idp.amazonaws.com'
+            Action: 
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'CognitoSNSPolicy'
+          PolicyDocument: 
+            Version: '2012-10-17'
+            Statement: 
+              - Effect: 'Allow'
+                Action: 'sns:publish'
+                Resource: '*'
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: Production
+      Description: Production Stage
+      DeploymentId: !Ref Deployment
+      ApiId: !Ref WebsocketGateway
+  Deployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - ConnectRoute
+      - DisconnectRoute
+      - AddResourceRoute
+    Properties:
+      ApiId: !Ref WebsocketGateway
+  WebsocketGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub
+        - '${name}WebsocketGateway'
+        - { name: !Ref ApplicationName }
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.action'
+
+  Authorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      Name: !Sub
+        - '${name}Authorizer'
+        - { name: !Ref ApplicationName }
+      ApiId: !Ref WebsocketGateway
+      AuthorizerType: REQUEST
+      AuthorizerUri:
+        !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations
+      IdentitySource:
+        - route.request.querystring.token
+  AuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebsocketGateway
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AuthorizerFunction
+      Principal: apigateway.amazonaws.com
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: build/authorizer/
+      Handler: authorizer.lambdaHandler
+      Policies:
+        - AWSLambdaFullAccess
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebsocketGateway
+      RouteKey: $connect
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref Authorizer
+      OperationName: ConnectRoute
+      Target: !Sub
+        - 'integrations/${integration}'
+        - { integration: !Ref ConnectIntegration }
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebsocketGateway
+      Description: Connect Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri: 
+        !Sub
+          - 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OnConnectFunction.Arn}/invocations'
+  OnConnectPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebsocketGateway
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OnConnectFunction
+      Principal: apigateway.amazonaws.com
+  OnConnectFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: build/on-connect/
+      Handler: on-connect.lambdaHandler
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref ApplicationTable
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebsocketGateway
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      OperationName: DisconnectRoute
+      Target: !Sub
+        - 'integrations/${integration}'
+        - { integration: !Ref DisconnectIntegration }
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebsocketGateway
+      Description: Disconnect Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri: 
+        !Sub
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OnDisconnectFunction.Arn}/invocations
+  OnDisconnectPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebsocketGateway
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OnDisconnectFunction
+      Principal: apigateway.amazonaws.com
+  OnDisconnectFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: build/on-disconnect/
+      Handler: on-disconnect.lambdaHandler
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref ApplicationTable
+
+  AddResourceRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebsocketGateway
+      RouteKey: AddResource
+      AuthorizationType: NONE
+      OperationName: AddResourceRoute
+      Target: !Sub
+        - 'integrations/${integration}'
+        - { integration: !Ref AddResourceIntegration }
+  AddResourceIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebsocketGateway
+      Description: AddResource Integration
+      IntegrationType: AWS_PROXY
+      IntegrationUri: 
+        !Sub
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AddResourceFunction.Arn}/invocations
+  AddResourcePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebsocketGateway
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AddResourceFunction
+      Principal: apigateway.amazonaws.com
+  AddResourceFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      CodeUri: build/add-resource/
+      Handler: add-resource.lambdaHandler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ApplicationTable
+
+Outputs:
+  WebSocketURI:
+    Description: 'The WSS Protocol URI'
+    Value: !Sub 
+      - 'wss://${Gateway}.execute-api.${AWS::Region}.amazonaws.com/${Stage}'
+      - { Gateway: !Ref WebsocketGateway, Stage: !Ref Stage }

@@ -1,0 +1,34 @@
+{
+    "name": "affiliate-boxy-serverless",
+    "version": "1.0.0",
+    "license": "UNLICENSED",
+    "scripts": {
+        "watch": "rimraf build && cross-env TS_NODE_PROJECT=\"webpack-tsconfig.json\" webpack --watch --env development",
+        "build": "rimraf build && cross-env TS_NODE_PROJECT=\"webpack-tsconfig.json\" webpack",
+        "start": "concurrently --kill-others \"yarpm run watch\" \"sam local start-api\"",
+        "debug": "concurrently --kill-others \"yarpm run watch\" \"sam local start-api -d 5858\"",
+        "deploy": "rimraf build && yarpm run build && sam deploy"
+    },
+    "dependencies": {
+        "aws-sdk": "^2.903.0",
+        "jsonwebtoken": "^8.5.1",
+        "jwk-to-pem": "^2.0.5"
+    },
+    "devDependencies": {
+        "@types/aws-lambda": "^8.10.76",
+        "@types/jsonwebtoken": "^8.5.1",
+        "@types/jwk-to-pem": "^2.0.0",
+        "@types/node": "^15.0.2",
+        "@types/webpack": "^5.28.0",
+        "concurrently": "^6.0.2",
+        "cross-env": "^7.0.3",
+        "rimraf": "^3.0.2",
+        "ts-loader": "^9.1.2",
+        "ts-node": "^9.1.1",
+        "tsconfig-paths": "^3.9.0",
+        "typescript": "^4.2.4",
+        "webpack": "^5.36.2",
+        "webpack-cli": "^4.7.0",
+        "yarpm": "^1.1.1"
+    }
+}
